@@ -8,10 +8,11 @@ const PageSize = 30
 const configPath = "./config.yaml"
 
 type Config struct {
-	Logger   LoggerConfig   `yaml:"logger"`
-	HTTP     HTTPConfig     `yaml:"http"`
-	Database PostgresConfig `yaml:"database"`
-	Jwt      Jwt            `yaml:"jwt"`
+	Logger    LoggerConfig   `yaml:"logger"`
+	HTTP      HTTPConfig     `yaml:"http"`
+	Database  PostgresConfig `yaml:"database"`
+	Database2 MySqlConfig    `yaml:"database_mysql"`
+	Jwt       Jwt            `yaml:"jwt"`
 }
 
 type LoggerConfig struct {
@@ -24,6 +25,15 @@ type HTTPConfig struct {
 }
 
 type PostgresConfig struct {
+	Driver   string `yaml:"driver"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"username"`
+	Password string `yaml:"password"`
+	DBName   string `yaml:"dbname"`
+}
+
+type MySqlConfig struct {
 	Driver   string `yaml:"driver"`
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
