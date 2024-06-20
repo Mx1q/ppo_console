@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"github.com/Mx1q/ppo_console/config"
 	"github.com/Mx1q/ppo_repo/repository/postgres"
+	mysql "github.com/Mx1q/ppo_repoMysql/repository/mySQL"
 	"github.com/Mx1q/ppo_services/domain"
 	"github.com/Mx1q/ppo_services/logger"
 	"github.com/Mx1q/ppo_services/services"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rivo/tview"
+	gormMysql "gorm.io/driver/mysql"
+	"gorm.io/gorm"
 	"log"
 	mail2 "net/mail"
 	"strconv"
@@ -88,9 +91,25 @@ func NewConn(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func Run(db *pgxpool.Pool, cfg *config.Config, logger logger.ILogger) *tview.Application {
+func NewConnMysql(ctx context.Context, cfg *config.Config) (*gorm.DB, error) {
+	databaseURL := fmt.Sprintf("%s:%s@%s(%s:%d)/%s?charset=utf8&parseTime=True&loc=Local",
+		cfg.Database.User, cfg.Database.Password, "tcp", cfg.Database.Host, cfg.Database.Port, cfg.Database.DBName)
+
+	db, err := gorm.Open(gormMysql.Open(databaseURL), &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("connecting to database: %w", err)
+	}
+	return db, nil
+}
+
+func Run(db string, cfg *config.Config, logger logger.ILogger) *tview.Application {
 	var tui Tui
-	tui.app = NewApp(db, cfg, logger)
+	var err error
+	tui.app, err = NewApp(db, cfg, logger)
+	if err != nil {
+		panic(err)
+	}
+
 	tui.userInfo = new(services.JwtPayload)
 	tui.userInfo.Role = UnauthorizedUser
 
@@ -119,47 +138,101 @@ func Run(db *pgxpool.Pool, cfg *config.Config, logger logger.ILogger) *tview.App
 	return app
 }
 
-func NewApp(db *pgxpool.Pool, cfg *config.Config, logger logger.ILogger) *App {
-	authRepo := postgres.NewAuthRepository(db)
-	userRepo := postgres.NewUserRepository(db)
+func NewApp(dbName string, cfg *config.Config, logger logger.ILogger) (*App, error) {
+	if dbName == "postgres" {
+		db, err := NewConn(context.Background(), cfg)
+		if err != nil {
+			return nil, fmt.Errorf("connecting to database: %w", err)
+		}
+		authRepo := postgres.NewAuthRepository(db)
+		userRepo := postgres.NewUserRepository(db)
 
-	commentRepo := postgres.NewCommentRepository(db)
-	saladRepo := postgres.NewSaladRepository(db)
-	recipeRepo := postgres.NewRecipeRepository(db)
-	recipeStepRepo := postgres.NewRecipeStepRepository(db)
-	ingredientRepo := postgres.NewIngredientRepository(db)
-	saladTypeRepo := postgres.NewSaladTypeRepository(db)
-	measurementRepo := postgres.NewMeasrementRepository(db)
+		commentRepo := postgres.NewCommentRepository(db)
+		saladRepo := postgres.NewSaladRepository(db)
+		recipeRepo := postgres.NewRecipeRepository(db)
+		recipeStepRepo := postgres.NewRecipeStepRepository(db)
+		ingredientRepo := postgres.NewIngredientRepository(db)
+		saladTypeRepo := postgres.NewSaladTypeRepository(db)
+		measurementRepo := postgres.NewMeasrementRepository(db)
 
-	validatorRepo := postgres.NewKeywordValidatorRepository(db)
+		validatorRepo := postgres.NewKeywordValidatorRepository(db)
 
-	crypto := services.NewHashCrypto()
+		crypto := services.NewHashCrypto()
 
-	keyWordValidator, err := services.NewKeywordValidatorService(context.Background(), validatorRepo, logger)
-	if err != nil {
-		return nil
+		keyWordValidator, err := services.NewKeywordValidatorService(context.Background(), validatorRepo, logger)
+		if err != nil {
+			return nil, fmt.Errorf("creating keyword validator service: %w", err)
+		}
+		urlValidator := services.NewUrlValidatorService(logger)
+		validators := []domain.IValidatorService{keyWordValidator, urlValidator}
+
+		return &App{
+			config:         cfg,
+			authService:    services.NewAuthService(authRepo, logger, crypto, cfg.Jwt.Key),
+			userService:    services.NewUserService(userRepo, logger),
+			commentService: services.NewCommentService(commentRepo, logger),
+			saladService: services.NewSaladInteractor(
+				services.NewSaladService(saladRepo, logger),
+				validators,
+			),
+			recipeService: services.NewRecipeService(recipeRepo, logger),
+			recipeStepService: services.NewRecipeStepInteractor(
+				services.NewRecipeStepService(recipeStepRepo, logger),
+				validators,
+			),
+			ingredientService:  services.NewIngredientService(ingredientRepo, logger),
+			saladTypeService:   services.NewSaladTypeService(saladTypeRepo, logger),
+			measurementService: services.NewMeasurementService(measurementRepo, logger),
+		}, nil
+	} else if dbName == "mysql" {
+		db, err := NewConnMysql(context.Background(), cfg)
+		if err != nil {
+			return nil, fmt.Errorf("connecting to database: %w", err)
+		}
+
+		authRepo := mysql.NewAuthRepository(db)
+		userRepo := mysql.NewUserRepository(db)
+
+		commentRepo := mysql.NewCommentRepository(db)
+		saladRepo := mysql.NewSaladRepository(db)
+		recipeRepo := mysql.NewRecipeRepository(db)
+		recipeStepRepo := mysql.NewRecipeStepRepository(db)
+		ingredientRepo := mysql.NewIngredientRepository(db)
+		saladTypeRepo := mysql.NewSaladTypeRepository(db)
+		measurementRepo := mysql.NewMeasrementRepository(db)
+
+		validatorRepo := mysql.NewKeywordValidatorRepository(db)
+
+		crypto := services.NewHashCrypto()
+
+		keyWordValidator, err := services.NewKeywordValidatorService(context.Background(), validatorRepo, logger)
+		if err != nil {
+			return nil, fmt.Errorf("creating keyword validator service: %w", err)
+		}
+		urlValidator := services.NewUrlValidatorService(logger)
+		validators := []domain.IValidatorService{keyWordValidator, urlValidator}
+
+		return &App{
+			config:         cfg,
+			authService:    services.NewAuthService(authRepo, logger, crypto, cfg.Jwt.Key),
+			userService:    services.NewUserService(userRepo, logger),
+			commentService: services.NewCommentService(commentRepo, logger),
+			saladService: services.NewSaladInteractor(
+				services.NewSaladService(saladRepo, logger),
+				validators,
+			),
+			recipeService: services.NewRecipeService(recipeRepo, logger),
+			recipeStepService: services.NewRecipeStepInteractor(
+				services.NewRecipeStepService(recipeStepRepo, logger),
+				validators,
+			),
+			ingredientService:  services.NewIngredientService(ingredientRepo, logger),
+			saladTypeService:   services.NewSaladTypeService(saladTypeRepo, logger),
+			measurementService: services.NewMeasurementService(measurementRepo, logger),
+		}, nil
 	}
-	urlValidator := services.NewUrlValidatorService(logger)
-	validators := []domain.IValidatorService{keyWordValidator, urlValidator}
 
-	return &App{
-		config:         cfg,
-		authService:    services.NewAuthService(authRepo, logger, crypto, cfg.Jwt.Key),
-		userService:    services.NewUserService(userRepo, logger),
-		commentService: services.NewCommentService(commentRepo, logger),
-		saladService: services.NewSaladInteractor(
-			services.NewSaladService(saladRepo, logger),
-			validators,
-		),
-		recipeService: services.NewRecipeService(recipeRepo, logger),
-		recipeStepService: services.NewRecipeStepInteractor(
-			services.NewRecipeStepService(recipeStepRepo, logger),
-			validators,
-		),
-		ingredientService:  services.NewIngredientService(ingredientRepo, logger),
-		saladTypeService:   services.NewSaladTypeService(saladTypeRepo, logger),
-		measurementService: services.NewMeasurementService(measurementRepo, logger),
-	}
+	return nil, fmt.Errorf("invalid db name %s", dbName)
 }
 
 func (tui *Tui) ErrorForm(form *tview.Form, pages *tview.Pages, textView *tview.TextView, prevPage string) *tview.Form {
